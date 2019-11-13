@@ -55,6 +55,10 @@ local function get_pem_cert_uid(raw_hostname)
   local uid = certificate_servers:get(hostname)
   if uid then
     return uid
+
+  local pem_cert_key = configuration.get_pem_cert_key(hostname)
+  if pem_cert_key and pem_cert_key ~= '' then
+    return pem_cert_key
   end
 
   local wildcard_hosatname, _, err = re_sub(hostname, "^[^\\.]+\\.", "*.", "jo")
