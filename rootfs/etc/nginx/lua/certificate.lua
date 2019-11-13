@@ -32,7 +32,7 @@ local function get_pem_cert_key(raw_hostname)
   local hostname = re_sub(raw_hostname, "\\.$", "", "jo")
 
   local pem_cert_key = configuration.get_pem_cert_key(hostname)
-  if pem_cert_key then
+  if pem_cert_key and pem_cert_key ~= '' then
     return pem_cert_key
   end
 
