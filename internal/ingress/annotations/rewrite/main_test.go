@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	extensions "k8s.io/api/extensions/v1beta1"
+	networking "k8s.io/api/networking/v1beta1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -33,28 +33,29 @@ const (
 	defRoute = "/demo"
 )
 
-func buildIngress() *extensions.Ingress {
-	defaultBackend := extensions.IngressBackend{
+func buildIngress() *networking.Ingress {
+	defaultBackend := networking.IngressBackend{
 		ServiceName: "default-backend",
 		ServicePort: intstr.FromInt(80),
 	}
 
-	return &extensions.Ingress{
+	return &networking.Ingress{
 		ObjectMeta: meta_v1.ObjectMeta{
-			Name:      "foo",
-			Namespace: api.NamespaceDefault,
+			Name:        "foo",
+			Namespace:   api.NamespaceDefault,
+			Annotations: map[string]string{},
 		},
-		Spec: extensions.IngressSpec{
-			Backend: &extensions.IngressBackend{
+		Spec: networking.IngressSpec{
+			Backend: &networking.IngressBackend{
 				ServiceName: "default-backend",
 				ServicePort: intstr.FromInt(80),
 			},
-			Rules: []extensions.IngressRule{
+			Rules: []networking.IngressRule{
 				{
 					Host: "foo.bar.com",
-					IngressRuleValue: extensions.IngressRuleValue{
-						HTTP: &extensions.HTTPIngressRuleValue{
-							Paths: []extensions.HTTPIngressPath{
+					IngressRuleValue: networking.IngressRuleValue{
+						HTTP: &networking.HTTPIngressRuleValue{
+							Paths: []networking.HTTPIngressPath{
 								{
 									Path:    "/foo",
 									Backend: defaultBackend,
@@ -163,19 +164,42 @@ func TestForceSSLRedirect(t *testing.T) {
 	}
 }
 func TestAppRoot(t *testing.T) {
-	ing := buildIngress()
+	ap := NewParser(mockBackend{redirect: true})
 
-	data := map[string]string{}
-	data[parser.GetAnnotationWithPrefix("app-root")] = "/app1"
-	ing.SetAnnotations(data)
-
-	i, _ := NewParser(mockBackend{redirect: true}).Parse(ing)
-	redirect, ok := i.(*Config)
-	if !ok {
-		t.Errorf("expected a App Context")
+	testCases := []struct {
+		title       string
+		path        string
+		expected    string
+		errExpected bool
+	}{
+		{"Empty path should return an error", "", "", true},
+		{"Relative paths are not allowed", "demo", "", true},
+		{"Path / should pass", "/", "/", false},
+		{"Path /demo should pass", "/demo", "/demo", false},
 	}
-	if redirect.AppRoot != "/app1" {
-		t.Errorf("Unexpected value got in AppRoot")
+
+	for _, testCase := range testCases {
+		t.Run(testCase.title, func(t *testing.T) {
+			ing := buildIngress()
+			ing.Annotations[parser.GetAnnotationWithPrefix("app-root")] = testCase.path
+			i, err := ap.Parse(ing)
+			if err != nil {
+				if testCase.errExpected {
+					return
+				}
+
+				t.Fatalf("%v: unexpected error obtaining running address/es: %v", testCase.title, err)
+			}
+
+			rewrite, ok := i.(*Config)
+			if !ok {
+				t.Fatalf("expected a rewrite Config")
+			}
+
+			if testCase.expected != rewrite.AppRoot {
+				t.Fatalf("%v: expected AppRoot with value %v but was returned: %v", testCase.title, testCase.expected, rewrite.AppRoot)
+			}
+		})
 	}
 }
 

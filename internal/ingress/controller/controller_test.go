@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -32,7 +33,7 @@ import (
 	"github.com/eapache/channels"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
-	extensions "k8s.io/api/extensions/v1beta1"
+	networking "k8s.io/api/networking/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
@@ -41,6 +42,7 @@ import (
 	"k8s.io/ingress-nginx/internal/ingress"
 	"k8s.io/ingress-nginx/internal/ingress/annotations"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/canary"
+	"k8s.io/ingress-nginx/internal/ingress/annotations/proxyssl"
 	"k8s.io/ingress-nginx/internal/ingress/controller/config"
 	ngx_config "k8s.io/ingress-nginx/internal/ingress/controller/config"
 	"k8s.io/ingress-nginx/internal/ingress/controller/store"
@@ -50,8 +52,6 @@ import (
 	"k8s.io/ingress-nginx/internal/k8s"
 	"k8s.io/ingress-nginx/internal/net/ssl"
 )
-
-const fakeCertificateName = "default-fake-certificate"
 
 type fakeIngressStore struct {
 	ingresses []*ingress.Ingress
@@ -157,6 +157,11 @@ func TestCheckIngress(t *testing.T) {
 		})
 	}()
 
+	err := file.CreateRequiredDirectories()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// Ensure no panic with wrong arguments
 	var nginx *NGINXController
 	nginx.CheckIngress(nil)
@@ -169,14 +174,14 @@ func TestCheckIngress(t *testing.T) {
 		ingresses: []*ingress.Ingress{},
 	}
 
-	ing := &extensions.Ingress{
+	ing := &networking.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-ingress",
 			Namespace:   "user-namespace",
 			Annotations: map[string]string{},
 		},
-		Spec: extensions.IngressSpec{
-			Rules: []extensions.IngressRule{
+		Spec: networking.IngressSpec{
+			Rules: []networking.IngressRule{
 				{
 					Host: "example.com",
 				},
@@ -252,6 +257,8 @@ func TestCheckIngress(t *testing.T) {
 	})
 }
 
+var pathPrefix = networking.PathTypePrefix
+
 func TestMergeAlternativeBackends(t *testing.T) {
 	testCases := map[string]struct {
 		ingress      *ingress.Ingress
@@ -262,20 +269,21 @@ func TestMergeAlternativeBackends(t *testing.T) {
 	}{
 		"alternative backend has no server and embeds into matching real backend": {
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "example",
 					},
-					Spec: extensions.IngressSpec{
-						Rules: []extensions.IngressRule{
+					Spec: networking.IngressSpec{
+						Rules: []networking.IngressRule{
 							{
 								Host: "example.com",
-								IngressRuleValue: extensions.IngressRuleValue{
-									HTTP: &extensions.HTTPIngressRuleValue{
-										Paths: []extensions.HTTPIngressPath{
+								IngressRuleValue: networking.IngressRuleValue{
+									HTTP: &networking.HTTPIngressRuleValue{
+										Paths: []networking.HTTPIngressPath{
 											{
-												Path: "/",
-												Backend: extensions.IngressBackend{
+												Path:     "/",
+												PathType: &pathPrefix,
+												Backend: networking.IngressBackend{
 													ServiceName: "http-svc-canary",
 													ServicePort: intstr.IntOrString{
 														Type:   intstr.Int,
@@ -309,8 +317,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "example.com",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -334,8 +343,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "example.com",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -343,20 +353,21 @@ func TestMergeAlternativeBackends(t *testing.T) {
 		},
 		"alternative backend merges with the correct real backend when multiple are present": {
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "example",
 					},
-					Spec: extensions.IngressSpec{
-						Rules: []extensions.IngressRule{
+					Spec: networking.IngressSpec{
+						Rules: []networking.IngressRule{
 							{
 								Host: "foo.bar",
-								IngressRuleValue: extensions.IngressRuleValue{
-									HTTP: &extensions.HTTPIngressRuleValue{
-										Paths: []extensions.HTTPIngressPath{
+								IngressRuleValue: networking.IngressRuleValue{
+									HTTP: &networking.HTTPIngressRuleValue{
+										Paths: []networking.HTTPIngressPath{
 											{
-												Path: "/",
-												Backend: extensions.IngressBackend{
+												Path:     "/",
+												PathType: &pathPrefix,
+												Backend: networking.IngressBackend{
 													ServiceName: "foo-http-svc-canary",
 													ServicePort: intstr.IntOrString{
 														Type:   intstr.Int,
@@ -370,12 +381,13 @@ func TestMergeAlternativeBackends(t *testing.T) {
 							},
 							{
 								Host: "example.com",
-								IngressRuleValue: extensions.IngressRuleValue{
-									HTTP: &extensions.HTTPIngressRuleValue{
-										Paths: []extensions.HTTPIngressPath{
+								IngressRuleValue: networking.IngressRuleValue{
+									HTTP: &networking.HTTPIngressRuleValue{
+										Paths: []networking.HTTPIngressPath{
 											{
-												Path: "/",
-												Backend: extensions.IngressBackend{
+												Path:     "/",
+												PathType: &pathPrefix,
+												Backend: networking.IngressBackend{
 													ServiceName: "http-svc-canary",
 													ServicePort: intstr.IntOrString{
 														Type:   intstr.Int,
@@ -421,8 +433,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "foo.bar",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-foo-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-foo-http-svc-80",
 						},
 					},
 				},
@@ -430,8 +443,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "example.com",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -467,8 +481,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "example.com",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -476,20 +491,21 @@ func TestMergeAlternativeBackends(t *testing.T) {
 		},
 		"alternative backend does not merge into itself": {
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "example",
 					},
-					Spec: extensions.IngressSpec{
-						Rules: []extensions.IngressRule{
+					Spec: networking.IngressSpec{
+						Rules: []networking.IngressRule{
 							{
 								Host: "example.com",
-								IngressRuleValue: extensions.IngressRuleValue{
-									HTTP: &extensions.HTTPIngressRuleValue{
-										Paths: []extensions.HTTPIngressPath{
+								IngressRuleValue: networking.IngressRuleValue{
+									HTTP: &networking.HTTPIngressRuleValue{
+										Paths: []networking.HTTPIngressPath{
 											{
-												Path: "/",
-												Backend: extensions.IngressBackend{
+												Path:     "/",
+												PathType: &pathPrefix,
+												Backend: networking.IngressBackend{
 													ServiceName: "http-svc-canary",
 													ServicePort: intstr.IntOrString{
 														Type:   intstr.Int,
@@ -520,12 +536,12 @@ func TestMergeAlternativeBackends(t *testing.T) {
 		},
 		"catch-all alternative backend has no server and embeds into matching real backend": {
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "example",
 					},
-					Spec: extensions.IngressSpec{
-						Backend: &extensions.IngressBackend{
+					Spec: networking.IngressSpec{
+						Backend: &networking.IngressBackend{
 							ServiceName: "http-svc-canary",
 							ServicePort: intstr.IntOrString{
 								IntVal: 80,
@@ -552,8 +568,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "_",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -577,8 +594,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "_",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "example-http-svc-80",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "example-http-svc-80",
 						},
 					},
 				},
@@ -586,12 +604,12 @@ func TestMergeAlternativeBackends(t *testing.T) {
 		},
 		"catch-all alternative backend does not merge into itself": {
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "example",
 					},
-					Spec: extensions.IngressSpec{
-						Backend: &extensions.IngressBackend{
+					Spec: networking.IngressSpec{
+						Backend: &networking.IngressBackend{
 							ServiceName: "http-svc-canary",
 							ServicePort: intstr.IntOrString{
 								IntVal: 80,
@@ -618,8 +636,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "_",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "upstream-default-backend",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "upstream-default-backend",
 						},
 					},
 				},
@@ -630,8 +649,9 @@ func TestMergeAlternativeBackends(t *testing.T) {
 					Hostname: "_",
 					Locations: []*ingress.Location{
 						{
-							Path:    "/",
-							Backend: "upstream-default-backend",
+							Path:     "/",
+							PathType: &pathPrefix,
+							Backend:  "upstream-default-backend",
 						},
 					},
 				},
@@ -696,15 +716,15 @@ func TestExtractTLSSecretName(t *testing.T) {
 		"ingress tls, nil secret": {
 			"foo.bar",
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test",
 					},
-					Spec: extensions.IngressSpec{
-						TLS: []extensions.IngressTLS{
+					Spec: networking.IngressSpec{
+						TLS: []networking.IngressTLS{
 							{SecretName: "demo"},
 						},
-						Rules: []extensions.IngressRule{
+						Rules: []networking.IngressRule{
 							{
 								Host: "foo.bar",
 							},
@@ -720,15 +740,15 @@ func TestExtractTLSSecretName(t *testing.T) {
 		"ingress tls, no host, matching cert cn": {
 			"foo.bar",
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test",
 					},
-					Spec: extensions.IngressSpec{
-						TLS: []extensions.IngressTLS{
+					Spec: networking.IngressSpec{
+						TLS: []networking.IngressTLS{
 							{SecretName: "demo"},
 						},
-						Rules: []extensions.IngressRule{
+						Rules: []networking.IngressRule{
 							{
 								Host: "foo.bar",
 							},
@@ -746,17 +766,17 @@ func TestExtractTLSSecretName(t *testing.T) {
 		"ingress tls, no host, wildcard cert with matching cn": {
 			"foo.bar",
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test",
 					},
-					Spec: extensions.IngressSpec{
-						TLS: []extensions.IngressTLS{
+					Spec: networking.IngressSpec{
+						TLS: []networking.IngressTLS{
 							{
 								SecretName: "demo",
 							},
 						},
-						Rules: []extensions.IngressRule{
+						Rules: []networking.IngressRule{
 							{
 								Host: "test.foo.bar",
 							},
@@ -774,18 +794,45 @@ func TestExtractTLSSecretName(t *testing.T) {
 		"ingress tls, hosts, matching cert cn": {
 			"foo.bar",
 			&ingress.Ingress{
-				Ingress: extensions.Ingress{
+				Ingress: networking.Ingress{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test",
 					},
-					Spec: extensions.IngressSpec{
-						TLS: []extensions.IngressTLS{
+					Spec: networking.IngressSpec{
+						TLS: []networking.IngressTLS{
 							{
 								Hosts:      []string{"foo.bar", "example.com"},
 								SecretName: "demo",
 							},
 						},
-						Rules: []extensions.IngressRule{
+						Rules: []networking.IngressRule{
+							{
+								Host: "foo.bar",
+							},
+						},
+					},
+				},
+			},
+			func(string) (*ingress.SSLCert, error) {
+				return nil, nil
+			},
+			"demo",
+		},
+		"ingress tls, hosts, matching cert cn, uppercase host": {
+			"FOO.BAR",
+			&ingress.Ingress{
+				Ingress: networking.Ingress{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test",
+					},
+					Spec: networking.IngressSpec{
+						TLS: []networking.IngressTLS{
+							{
+								Hosts:      []string{"foo.bar", "example.com"},
+								SecretName: "demo",
+							},
+						},
+						Rules: []networking.IngressRule{
 							{
 								Host: "foo.bar",
 							},
@@ -811,21 +858,21 @@ func TestExtractTLSSecretName(t *testing.T) {
 }
 
 func TestGetBackendServers(t *testing.T) {
-	ctl := newNGINXController(t)
 
 	testCases := []struct {
-		Ingresses []*ingress.Ingress
-		Validate  func(servers []*ingress.Server)
+		Ingresses    []*ingress.Ingress
+		Validate     func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server)
+		SetConfigMap func(namespace string) *v1.ConfigMap
 	}{
 		{
 			Ingresses: []*ingress.Ingress{
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Backend: &extensions.IngressBackend{
+						Spec: networking.IngressSpec{
+							Backend: &networking.IngressBackend{
 								ServiceName: "http-svc-canary",
 								ServicePort: intstr.IntOrString{
 									IntVal: 80,
@@ -840,7 +887,7 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 			},
-			Validate: func(servers []*ingress.Server) {
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
 				if len(servers) != 1 {
 					t.Errorf("servers count should be 1, got %d", len(servers))
 					return
@@ -858,16 +905,17 @@ func TestGetBackendServers(t *testing.T) {
 					t.Errorf("location backend should be '%s', got '%s'", defUpstreamName, s.Locations[0].Backend)
 				}
 			},
+			SetConfigMap: testConfigMap,
 		},
 		{
 			Ingresses: []*ingress.Ingress{
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Backend: &extensions.IngressBackend{
+						Spec: networking.IngressSpec{
+							Backend: &networking.IngressBackend{
 								ServiceName: "http-svc-canary",
 								ServicePort: intstr.IntOrString{
 									IntVal: 80,
@@ -882,12 +930,12 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Backend: &extensions.IngressBackend{
+						Spec: networking.IngressSpec{
+							Backend: &networking.IngressBackend{
 								ServiceName: "http-svc",
 								ServicePort: intstr.IntOrString{
 									IntVal: 80,
@@ -902,7 +950,7 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 			},
-			Validate: func(servers []*ingress.Server) {
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
 				if len(servers) != 1 {
 					t.Errorf("servers count should be 1, got %d", len(servers))
 					return
@@ -920,24 +968,26 @@ func TestGetBackendServers(t *testing.T) {
 					t.Errorf("location backend should be 'example-http-svc-80', got '%s'", s.Locations[0].Backend)
 				}
 			},
+			SetConfigMap: testConfigMap,
 		},
 		{
 			Ingresses: []*ingress.Ingress{
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Rules: []extensions.IngressRule{
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
 								{
 									Host: "example.com",
-									IngressRuleValue: extensions.IngressRuleValue{
-										HTTP: &extensions.HTTPIngressRuleValue{
-											Paths: []extensions.HTTPIngressPath{
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
 												{
-													Path: "/",
-													Backend: extensions.IngressBackend{
+													Path:     "/",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
 														ServiceName: "http-svc-canary",
 														ServicePort: intstr.IntOrString{
 															Type:   intstr.Int,
@@ -959,7 +1009,7 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 			},
-			Validate: func(servers []*ingress.Server) {
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
 				if len(servers) != 1 {
 					t.Errorf("servers count should be 1, got %d", len(servers))
 					return
@@ -977,25 +1027,27 @@ func TestGetBackendServers(t *testing.T) {
 					t.Errorf("location backend should be '%s', got '%s'", defUpstreamName, s.Locations[0].Backend)
 				}
 			},
+			SetConfigMap: testConfigMap,
 		},
 		{
 			Ingresses: []*ingress.Ingress{
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "example",
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Rules: []extensions.IngressRule{
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
 								{
 									Host: "example.com",
-									IngressRuleValue: extensions.IngressRuleValue{
-										HTTP: &extensions.HTTPIngressRuleValue{
-											Paths: []extensions.HTTPIngressPath{
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
 												{
-													Path: "/",
-													Backend: extensions.IngressBackend{
+													Path:     "/",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
 														ServiceName: "http-svc",
 														ServicePort: intstr.IntOrString{
 															Type:   intstr.Int,
@@ -1017,21 +1069,22 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 				{
-					Ingress: extensions.Ingress{
+					Ingress: networking.Ingress{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "example-canary",
 							Namespace: "example",
 						},
-						Spec: extensions.IngressSpec{
-							Rules: []extensions.IngressRule{
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
 								{
 									Host: "example.com",
-									IngressRuleValue: extensions.IngressRuleValue{
-										HTTP: &extensions.HTTPIngressRuleValue{
-											Paths: []extensions.HTTPIngressPath{
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
 												{
-													Path: "/",
-													Backend: extensions.IngressBackend{
+													Path:     "/",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
 														ServiceName: "http-svc-canary",
 														ServicePort: intstr.IntOrString{
 															Type:   intstr.Int,
@@ -1053,7 +1106,7 @@ func TestGetBackendServers(t *testing.T) {
 					},
 				},
 			},
-			Validate: func(servers []*ingress.Server) {
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
 				if len(servers) != 2 {
 					t.Errorf("servers count should be 2, got %d", len(servers))
 					return
@@ -1080,12 +1133,513 @@ func TestGetBackendServers(t *testing.T) {
 					t.Errorf("location backend should be 'example-http-svc-80', got '%s'", s.Locations[0].Backend)
 				}
 			},
+			SetConfigMap: testConfigMap,
+		},
+		{
+			Ingresses: []*ingress.Ingress{
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-a",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/a",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-1",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: false,
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-a-canary",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/a",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-2",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: true,
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-b",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/b",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-2",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: false,
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-b-canary",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/b",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-1",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: true,
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-c",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/c",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-1",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: false,
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "example-c-canary",
+							Namespace: "example",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/c",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "http-svc-2",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						Canary: canary.Config{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
+				if len(servers) != 2 {
+					t.Errorf("servers count should be 2, got %d", len(servers))
+					return
+				}
+
+				s := servers[0]
+				if s.Hostname != "_" {
+					t.Errorf("server hostname should be '_', got '%s'", s.Hostname)
+				}
+				if !s.Locations[0].IsDefBackend {
+					t.Errorf("server location 0 should be default backend")
+				}
+
+				if s.Locations[0].Backend != defUpstreamName {
+					t.Errorf("location backend should be '%s', got '%s'", defUpstreamName, s.Locations[0].Backend)
+				}
+
+				s = servers[1]
+				if s.Hostname != "example.com" {
+					t.Errorf("server hostname should be 'example.com', got '%s'", s.Hostname)
+				}
+
+				if s.Locations[0].Backend != "example-http-svc-1-80" || s.Locations[1].Backend != "example-http-svc-1-80" || s.Locations[2].Backend != "example-http-svc-1-80" {
+					t.Errorf("all location backend should be 'example-http-svc-1-80'")
+				}
+
+				if len(upstreams) != 3 {
+					t.Errorf("upstreams count should be 3, got %d", len(upstreams))
+					return
+				}
+
+				if upstreams[0].Name != "example-http-svc-1-80" {
+					t.Errorf("example-http-svc-1-80 should be frist upstream, got %s", upstreams[0].Name)
+					return
+				}
+				if upstreams[0].NoServer {
+					t.Errorf("'example-http-svc-1-80' should be primary upstream, got as alternative upstream")
+				}
+				if len(upstreams[0].AlternativeBackends) != 1 || upstreams[0].AlternativeBackends[0] != "example-http-svc-2-80" {
+					t.Errorf("example-http-svc-2-80 should be alternative upstream for 'example-http-svc-1-80'")
+				}
+			},
+			SetConfigMap: testConfigMap,
+		},
+		{
+			Ingresses: []*ingress.Ingress{
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "proxy-ssl-1",
+							Namespace: "proxyssl",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/path1",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "path1-svc",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						ProxySSL: proxyssl.Config{
+							AuthSSLCert: resolver.AuthSSLCert{
+								CAFileName: "cafile1.crt",
+								Secret:     "secret1",
+							},
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "proxy-ssl-2",
+							Namespace: "proxyssl",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/path2",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "path2-svc",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						ProxySSL: proxyssl.Config{
+							AuthSSLCert: resolver.AuthSSLCert{
+								CAFileName: "cafile1.crt",
+								Secret:     "secret1",
+							},
+						},
+					},
+				},
+			},
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
+				if len(servers) != 2 {
+					t.Errorf("servers count should be 2, got %d", len(servers))
+					return
+				}
+
+				s := servers[1]
+
+				if s.ProxySSL.CAFileName != ingresses[0].ParsedAnnotations.ProxySSL.CAFileName {
+					t.Errorf("server cafilename should be '%s', got '%s'", ingresses[0].ParsedAnnotations.ProxySSL.CAFileName, s.ProxySSL.CAFileName)
+				}
+
+				if s.Locations[0].ProxySSL.CAFileName != ingresses[0].ParsedAnnotations.ProxySSL.CAFileName {
+					t.Errorf("location cafilename should be '%s', got '%s'", ingresses[0].ParsedAnnotations.ProxySSL.CAFileName, s.Locations[0].ProxySSL.CAFileName)
+				}
+
+				if s.Locations[1].ProxySSL.CAFileName != ingresses[1].ParsedAnnotations.ProxySSL.CAFileName {
+					t.Errorf("location cafilename should be '%s', got '%s'", ingresses[1].ParsedAnnotations.ProxySSL.CAFileName, s.Locations[0].ProxySSL.CAFileName)
+				}
+			},
+			SetConfigMap: testConfigMap,
+		},
+		{
+			Ingresses: []*ingress.Ingress{
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "proxy-ssl-1",
+							Namespace: "proxyssl",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/path1",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "path1-svc",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						ProxySSL: proxyssl.Config{
+							AuthSSLCert: resolver.AuthSSLCert{
+								CAFileName: "cafile1.crt",
+								Secret:     "secret1",
+							},
+						},
+					},
+				},
+				{
+					Ingress: networking.Ingress{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "proxy-ssl-2",
+							Namespace: "proxyssl",
+						},
+						Spec: networking.IngressSpec{
+							Rules: []networking.IngressRule{
+								{
+									Host: "example.com",
+									IngressRuleValue: networking.IngressRuleValue{
+										HTTP: &networking.HTTPIngressRuleValue{
+											Paths: []networking.HTTPIngressPath{
+												{
+													Path:     "/path2",
+													PathType: &pathPrefix,
+													Backend: networking.IngressBackend{
+														ServiceName: "path2-svc",
+														ServicePort: intstr.IntOrString{
+															Type:   intstr.Int,
+															IntVal: 80,
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					ParsedAnnotations: &annotations.Ingress{
+						ProxySSL: proxyssl.Config{
+							AuthSSLCert: resolver.AuthSSLCert{
+								CAFileName: "cafile1.crt",
+								Secret:     "secret1",
+							},
+						},
+					},
+				},
+			},
+			Validate: func(ingresses []*ingress.Ingress, upstreams []*ingress.Backend, servers []*ingress.Server) {
+				if len(servers) != 2 {
+					t.Errorf("servers count should be 2, got %d", len(servers))
+					return
+				}
+
+				s := servers[1]
+
+				if s.ProxySSL.CAFileName != "" {
+					t.Errorf("server cafilename should be empty, got '%s'", s.ProxySSL.CAFileName)
+				}
+
+				if s.Locations[0].ProxySSL.CAFileName != ingresses[0].ParsedAnnotations.ProxySSL.CAFileName {
+					t.Errorf("location cafilename should be '%s', got '%s'", ingresses[0].ParsedAnnotations.ProxySSL.CAFileName, s.Locations[0].ProxySSL.CAFileName)
+				}
+
+				if s.Locations[1].ProxySSL.CAFileName != ingresses[1].ParsedAnnotations.ProxySSL.CAFileName {
+					t.Errorf("location cafilename should be '%s', got '%s'", ingresses[1].ParsedAnnotations.ProxySSL.CAFileName, s.Locations[0].ProxySSL.CAFileName)
+				}
+			},
+			SetConfigMap: func(ns string) *v1.ConfigMap {
+				return &v1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:     "config",
+						SelfLink: fmt.Sprintf("/api/v1/namespaces/%s/configmaps/config", ns),
+					},
+					Data: map[string]string{
+						"proxy-ssl-location-only": "true",
+					},
+				}
+			},
 		},
 	}
 
 	for _, testCase := range testCases {
-		_, servers := ctl.getBackendServers(testCase.Ingresses)
-		testCase.Validate(servers)
+		nginxController := newDynamicNginxController(t, testCase.SetConfigMap)
+		upstreams, servers := nginxController.getBackendServers(testCase.Ingresses)
+		testCase.Validate(testCase.Ingresses, upstreams, servers)
+	}
+}
+
+func testConfigMap(ns string) *v1.ConfigMap {
+	return &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:     "config",
+			SelfLink: fmt.Sprintf("/api/v1/namespaces/%s/configmaps/config", ns),
+		},
 	}
 }
 
@@ -1100,23 +1654,20 @@ func newNGINXController(t *testing.T) *NGINXController {
 	}
 
 	clientSet := fake.NewSimpleClientset()
+
 	configMap := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:     "config",
 			SelfLink: fmt.Sprintf("/api/v1/namespaces/%s/configmaps/config", ns),
 		},
 	}
-	_, err := clientSet.CoreV1().ConfigMaps(ns).Create(configMap)
+
+	_, err := clientSet.CoreV1().ConfigMaps(ns).Create(context.TODO(), configMap, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("error creating the configuration map: %v", err)
 	}
 
-	fs, err := file.NewFakeFS()
-	if err != nil {
-		t.Fatalf("error: %v", err)
-	}
-
-	storer := store.New(true,
+	storer := store.New(
 		ns,
 		fmt.Sprintf("%v/config", ns),
 		fmt.Sprintf("%v/tcp", ns),
@@ -1124,13 +1675,11 @@ func newNGINXController(t *testing.T) *NGINXController {
 		"",
 		10*time.Minute,
 		clientSet,
-		fs,
 		channels.NewRingChannel(10),
-		false,
 		pod,
 		false)
 
-	sslCert := ssl.GetFakeSSLCert(fs)
+	sslCert := ssl.GetFakeSSLCert()
 	config := &Configuration{
 		FakeCertificate: sslCert,
 		ListenPorts: &ngx_config.ListenPorts{
@@ -1139,10 +1688,9 @@ func newNGINXController(t *testing.T) *NGINXController {
 	}
 
 	return &NGINXController{
-		store:      storer,
-		cfg:        config,
-		command:    NewNginxCommand(),
-		fileSystem: fs,
+		store:   storer,
+		cfg:     config,
+		command: NewNginxCommand(),
 	}
 }
 
@@ -1154,5 +1702,50 @@ func fakeX509Cert(dnsNames []string) *x509.Certificate {
 		Extensions: []pkix.Extension{
 			{Id: oidExtensionSubjectAltName},
 		},
+	}
+}
+
+func newDynamicNginxController(t *testing.T, setConfigMap func(string) *v1.ConfigMap) *NGINXController {
+	ns := v1.NamespaceDefault
+	pod := &k8s.PodInfo{
+		Name:      "testpod",
+		Namespace: ns,
+		Labels: map[string]string{
+			"pod-template-hash": "1234",
+		},
+	}
+
+	clientSet := fake.NewSimpleClientset()
+	configMap := setConfigMap(ns)
+
+	_, err := clientSet.CoreV1().ConfigMaps(ns).Create(context.TODO(), configMap, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("error creating the configuration map: %v", err)
+	}
+
+	storer := store.New(
+		ns,
+		fmt.Sprintf("%v/config", ns),
+		fmt.Sprintf("%v/tcp", ns),
+		fmt.Sprintf("%v/udp", ns),
+		"",
+		10*time.Minute,
+		clientSet,
+		channels.NewRingChannel(10),
+		pod,
+		false)
+
+	sslCert := ssl.GetFakeSSLCert()
+	config := &Configuration{
+		FakeCertificate: sslCert,
+		ListenPorts: &ngx_config.ListenPorts{
+			Default: 80,
+		},
+	}
+
+	return &NGINXController{
+		store:   storer,
+		cfg:     config,
+		command: NewNginxCommand(),
 	}
 }

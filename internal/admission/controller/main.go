@@ -17,19 +17,21 @@ limitations under the License.
 package controller
 
 import (
-	"github.com/google/uuid"
+	"fmt"
+
 	"k8s.io/api/admission/v1beta1"
 	extensions "k8s.io/api/extensions/v1beta1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
+	networking "k8s.io/api/networking/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
+
+	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 )
 
 // Checker must return an error if the ingress provided as argument
 // contains invalid instructions
 type Checker interface {
-	CheckIngress(ing *extensions.Ingress) error
+	CheckIngress(ing *networking.Ingress) error
 }
 
 // IngressAdmission implements the AdmissionController interface
@@ -38,56 +40,82 @@ type IngressAdmission struct {
 	Checker Checker
 }
 
+var (
+	extensionsResource = metav1.GroupVersionResource{
+		Group:    networking.GroupName,
+		Version:  "v1beta1",
+		Resource: "ingresses",
+	}
+
+	networkingResource = metav1.GroupVersionResource{
+		Group:    extensions.GroupName,
+		Version:  "v1beta1",
+		Resource: "ingresses",
+	}
+)
+
 // HandleAdmission populates the admission Response
 // with Allowed=false if the Object is an ingress that would prevent nginx to reload the configuration
 // with Allowed=true otherwise
-func (ia *IngressAdmission) HandleAdmission(ar *v1beta1.AdmissionReview) error {
+func (ia *IngressAdmission) HandleAdmission(ar *v1beta1.AdmissionReview) {
 	if ar.Request == nil {
-		klog.Infof("rejecting nil request")
 		ar.Response = &v1beta1.AdmissionResponse{
-			UID:     types.UID(uuid.New().String()),
 			Allowed: false,
 		}
-		return nil
+
+		return
 	}
-	klog.V(3).Infof("handling ingress admission webhook request for {%s}  %s in namespace %s", ar.Request.Resource.String(), ar.Request.Name, ar.Request.Namespace)
 
-	ingressResource := v1.GroupVersionResource{Group: extensions.SchemeGroupVersion.Group, Version: extensions.SchemeGroupVersion.Version, Resource: "ingresses"}
-
-	if ar.Request.Resource == ingressResource {
+	if ar.Request.Resource != extensionsResource && ar.Request.Resource != networkingResource {
+		err := fmt.Errorf("rejecting admission review because the request does not contains an Ingress resource but %s with name %s in namespace %s",
+			ar.Request.Resource.String(), ar.Request.Name, ar.Request.Namespace)
 		ar.Response = &v1beta1.AdmissionResponse{
-			UID:     types.UID(uuid.New().String()),
+			UID:     ar.Request.UID,
 			Allowed: false,
-		}
-		ingress := extensions.Ingress{}
-		deserializer := codecs.UniversalDeserializer()
-		if _, _, err := deserializer.Decode(ar.Request.Object.Raw, nil, &ingress); err != nil {
-			ar.Response.Result = &v1.Status{Message: err.Error()}
-			ar.Response.AuditAnnotations = map[string]string{
-				parser.GetAnnotationWithPrefix("error"): err.Error(),
-			}
-			klog.Errorf("failed to decode ingress %s in namespace %s: %s, refusing it", ar.Request.Name, ar.Request.Namespace, err.Error())
-			return err
+			Result:  &metav1.Status{Message: err.Error()},
 		}
 
-		err := ia.Checker.CheckIngress(&ingress)
-		if err != nil {
-			ar.Response.Result = &v1.Status{Message: err.Error()}
-			ar.Response.AuditAnnotations = map[string]string{
-				parser.GetAnnotationWithPrefix("error"): err.Error(),
-			}
-			klog.Errorf("failed to generate configuration for ingress %s in namespace %s: %s, refusing it", ar.Request.Name, ar.Request.Namespace, err.Error())
-			return err
-		}
-		ar.Response.Allowed = true
-		klog.Infof("successfully validated configuration, accepting ingress %s in namespace %s", ar.Request.Name, ar.Request.Namespace)
-		return nil
+		return
 	}
 
-	klog.Infof("accepting non ingress %s in namespace %s %s", ar.Request.Name, ar.Request.Namespace, ar.Request.Resource.String())
+	ingress := networking.Ingress{}
+	deserializer := codecs.UniversalDeserializer()
+	if _, _, err := deserializer.Decode(ar.Request.Object.Raw, nil, &ingress); err != nil {
+		klog.Errorf("failed to decode ingress %s in namespace %s: %s, refusing it",
+			ar.Request.Name, ar.Request.Namespace, err.Error())
+
+		ar.Response = &v1beta1.AdmissionResponse{
+			UID:     ar.Request.UID,
+			Allowed: false,
+
+			Result: &metav1.Status{Message: err.Error()},
+			AuditAnnotations: map[string]string{
+				parser.GetAnnotationWithPrefix("error"): err.Error(),
+			},
+		}
+
+		return
+	}
+
+	if err := ia.Checker.CheckIngress(&ingress); err != nil {
+		klog.Errorf("failed to generate configuration for ingress %s in namespace %s: %s, refusing it",
+			ar.Request.Name, ar.Request.Namespace, err.Error())
+		ar.Response = &v1beta1.AdmissionResponse{
+			UID:     ar.Request.UID,
+			Allowed: false,
+			Result:  &metav1.Status{Message: err.Error()},
+			AuditAnnotations: map[string]string{
+				parser.GetAnnotationWithPrefix("error"): err.Error(),
+			},
+		}
+
+		return
+	}
+
+	klog.Infof("successfully validated configuration, accepting ingress %s in namespace %s",
+		ar.Request.Name, ar.Request.Namespace)
 	ar.Response = &v1beta1.AdmissionResponse{
-		UID:     types.UID(uuid.New().String()),
+		UID:     ar.Request.UID,
 		Allowed: true,
 	}
-	return nil
 }

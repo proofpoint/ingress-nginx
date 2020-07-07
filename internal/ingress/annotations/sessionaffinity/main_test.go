@@ -20,35 +20,35 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	extensions "k8s.io/api/extensions/v1beta1"
+	networking "k8s.io/api/networking/v1beta1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
-func buildIngress() *extensions.Ingress {
-	defaultBackend := extensions.IngressBackend{
+func buildIngress() *networking.Ingress {
+	defaultBackend := networking.IngressBackend{
 		ServiceName: "default-backend",
 		ServicePort: intstr.FromInt(80),
 	}
 
-	return &extensions.Ingress{
+	return &networking.Ingress{
 		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "foo",
 			Namespace: api.NamespaceDefault,
 		},
-		Spec: extensions.IngressSpec{
-			Backend: &extensions.IngressBackend{
+		Spec: networking.IngressSpec{
+			Backend: &networking.IngressBackend{
 				ServiceName: "default-backend",
 				ServicePort: intstr.FromInt(80),
 			},
-			Rules: []extensions.IngressRule{
+			Rules: []networking.IngressRule{
 				{
 					Host: "foo.bar.com",
-					IngressRuleValue: extensions.IngressRuleValue{
-						HTTP: &extensions.HTTPIngressRuleValue{
-							Paths: []extensions.HTTPIngressPath{
+					IngressRuleValue: networking.IngressRuleValue{
+						HTTP: &networking.HTTPIngressRuleValue{
+							Paths: []networking.HTTPIngressPath{
 								{
 									Path:    "/foo",
 									Backend: defaultBackend,
@@ -67,6 +67,7 @@ func TestIngressAffinityCookieConfig(t *testing.T) {
 
 	data := map[string]string{}
 	data[parser.GetAnnotationWithPrefix(annotationAffinityType)] = "cookie"
+	data[parser.GetAnnotationWithPrefix(annotationAffinityMode)] = "balanced"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieName)] = "INGRESSCOOKIE"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieExpires)] = "4500"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieMaxAge)] = "3000"
@@ -84,8 +85,12 @@ func TestIngressAffinityCookieConfig(t *testing.T) {
 		t.Errorf("expected cookie as affinity but returned %v", nginxAffinity.Type)
 	}
 
+	if nginxAffinity.Mode != "balanced" {
+		t.Errorf("expected balanced as affinity mode but returned %v", nginxAffinity.Mode)
+	}
+
 	if nginxAffinity.Cookie.Name != "INGRESSCOOKIE" {
-		t.Errorf("expected route as session-cookie-name but returned %v", nginxAffinity.Cookie.Name)
+		t.Errorf("expected INGRESSCOOKIE as session-cookie-name but returned %v", nginxAffinity.Cookie.Name)
 	}
 
 	if nginxAffinity.Cookie.Expires != "4500" {

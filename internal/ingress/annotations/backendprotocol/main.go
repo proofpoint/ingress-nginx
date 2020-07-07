@@ -20,7 +20,7 @@ import (
 	"regexp"
 	"strings"
 
-	extensions "k8s.io/api/extensions/v1beta1"
+	extensions "k8s.io/api/networking/v1beta1"
 	"k8s.io/klog"
 
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
@@ -31,7 +31,7 @@ import (
 const HTTP = "HTTP"
 
 var (
-	validProtocols = regexp.MustCompile(`^(HTTP|HTTPS|AJP|GRPC|GRPCS)$`)
+	validProtocols = regexp.MustCompile(`^(HTTP|HTTPS|AJP|GRPC|GRPCS|FCGI)$`)
 )
 
 type backendProtocol struct {
@@ -46,20 +46,28 @@ func NewParser(r resolver.Resolver) parser.IngressAnnotation {
 // ParseAnnotations parses the annotations contained in the ingress
 // rule used to indicate the backend protocol.
 func (a backendProtocol) Parse(ing *extensions.Ingress) (interface{}, error) {
+	klog.Infof("Parsing backend protocol annotation")
 	if ing.GetAnnotations() == nil {
 		return HTTP, nil
 	}
 
+	// Proofpoint hack to make v0.24.1 compatible with deprecated "secure-backend" annotation
+	// check backend-protocol first; if it exists, apply it, else check for secure-backends.
+
 	proto, err := parser.GetStringAnnotation("backend-protocol", ing)
-	if err != nil {
-		return HTTP, nil
+	if err == nil {
+		proto = strings.TrimSpace(strings.ToUpper(proto))
+		if !validProtocols.MatchString(proto) {
+			klog.Warningf("Protocol %v is not a valid value for the backend-protocol annotation. Using HTTP as protocol", proto)
+			return HTTP, nil
+		}
+		return proto, nil
 	}
 
-	proto = strings.TrimSpace(strings.ToUpper(proto))
-	if !validProtocols.MatchString(proto) {
-		klog.Warningf("Protocol %v is not a valid value for the backend-protocol annotation. Using HTTP as protocol", proto)
-		return HTTP, nil
+	secure, err := parser.GetBoolAnnotation("secure-backends", ing)
+	if err == nil && secure == true {
+		klog.Infof("Parsing backend protocol annotation: secure-backends is true")
+		return "HTTPS", nil
 	}
-
-	return proto, nil
+	return HTTP, nil
 }

@@ -17,7 +17,7 @@ limitations under the License.
 package modsecurity
 
 import (
-	extensions "k8s.io/api/extensions/v1beta1"
+	networking "k8s.io/api/networking/v1beta1"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
@@ -25,6 +25,7 @@ import (
 // Config contains ModSecurity Configuration items
 type Config struct {
 	Enable        bool   `json:"enable-modsecurity"`
+	EnableSet     bool   `json:"enable-modsecurity-set"`
 	OWASPRules    bool   `json:"enable-owasp-core-rules"`
 	TransactionID string `json:"modsecurity-transaction-id"`
 	Snippet       string `json:"modsecurity-snippet"`
@@ -39,6 +40,9 @@ func (modsec1 *Config) Equal(modsec2 *Config) bool {
 		return false
 	}
 	if modsec1.Enable != modsec2.Enable {
+		return false
+	}
+	if modsec1.EnableSet != modsec2.EnableSet {
 		return false
 	}
 	if modsec1.OWASPRules != modsec2.OWASPRules {
@@ -65,13 +69,15 @@ type modSecurity struct {
 
 // Parse parses the annotations contained in the ingress
 // rule used to enable ModSecurity in a particular location
-func (a modSecurity) Parse(ing *extensions.Ingress) (interface{}, error) {
+func (a modSecurity) Parse(ing *networking.Ingress) (interface{}, error) {
 	var err error
 	config := &Config{}
 
+	config.EnableSet = true
 	config.Enable, err = parser.GetBoolAnnotation("enable-modsecurity", ing)
 	if err != nil {
 		config.Enable = false
+		config.EnableSet = false
 	}
 
 	config.OWASPRules, err = parser.GetBoolAnnotation("enable-owasp-core-rules", ing)

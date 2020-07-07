@@ -1,7 +1,8 @@
 site_name: NGINX Ingress Controller
-strict: true
 repo_name: "kubernetes/ingress-nginx"
-repo_url: "https://github.com/kubernetes/ingress-nginx"
+repo_url: https://github.com/kubernetes/ingress-nginx
+site_url: https://kubernetes.github.io/ingress-nginx
+
 markdown_extensions:
   - admonition
   - codehilite
@@ -9,21 +10,25 @@ markdown_extensions:
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.superfences
+  - meta
   - toc:
-      permalink: true
+      # insert a blank space before the character
+      permalink: " ¶"
 theme:
   name: material
-  feature:
-    tabs: true
-  logo:
-    icon: "public" # globe icon
+  features:
+    - tabs
+    - instant
+
   palette:
     primary: "teal"
     accent: "green"
+
   include_sidebar: true
 
 plugins:
   - search
+  - awesome-pages
 
 extra_css: [extra.css]
 
@@ -40,7 +45,6 @@ nav:
       - Installation Guide: "deploy/index.md"
       - Bare-metal considerations: "deploy/baremetal.md"
       - Role Based Access Control (RBAC): "deploy/rbac.md"
-      - Validating Webhook (admission controller): "deploy/validating-webhook.md"
       - Upgrade: "deploy/upgrade.md"
   - User guide:
       - NGINX Configuration:
@@ -54,6 +58,7 @@ nav:
       - Custom errors: "user-guide/custom-errors.md"
       - Default backend: "user-guide/default-backend.md"
       - Exposing TCP and UDP services: "user-guide/exposing-tcp-udp-services.md"
+      - Exposing FCGI services: "user-guide/fcgi-services.md"
       - Regular expressions in paths: user-guide/ingress-path-matching.md
       - External Articles: "user-guide/external-articles.md"
       - Miscellaneous: "user-guide/miscellaneous.md"
@@ -86,3 +91,4 @@ nav:
       - Rewrite: "examples/rewrite/README.md"
       - Static IPs: "examples/static-ip/README.md"
       - TLS termination: "examples/tls-termination/README.md"
+      - Pod Security Policy (PSP): "examples/psp/README.md"

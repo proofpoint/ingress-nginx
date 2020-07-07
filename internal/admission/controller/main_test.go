@@ -21,8 +21,8 @@ import (
 	"testing"
 
 	"k8s.io/api/admission/v1beta1"
-	extensions "k8s.io/api/extensions/v1beta1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	networking "k8s.io/api/networking/v1beta1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/json"
 )
 
@@ -32,7 +32,7 @@ type failTestChecker struct {
 	t *testing.T
 }
 
-func (ftc failTestChecker) CheckIngress(ing *extensions.Ingress) error {
+func (ftc failTestChecker) CheckIngress(ing *networking.Ingress) error {
 	ftc.t.Error("checker should not be called")
 	return nil
 }
@@ -42,7 +42,7 @@ type testChecker struct {
 	err error
 }
 
-func (tc testChecker) CheckIngress(ing *extensions.Ingress) error {
+func (tc testChecker) CheckIngress(ing *networking.Ingress) error {
 	if ing.ObjectMeta.Name != testIngressName {
 		tc.t.Errorf("CheckIngress should be called with %v ingress, but got %v", testIngressName, ing.ObjectMeta.Name)
 	}
@@ -58,52 +58,44 @@ func TestHandleAdmission(t *testing.T) {
 			Resource: v1.GroupVersionResource{Group: "", Version: "v1", Resource: "pod"},
 		},
 	}
-	err := adm.HandleAdmission(review)
-	if !review.Response.Allowed {
-		t.Errorf("with a non ingress resource, the check should pass")
-	}
-	if err != nil {
-		t.Errorf("with a non ingress resource, no error should be returned")
+
+	adm.HandleAdmission(review)
+	if review.Response.Allowed {
+		t.Fatalf("with a non ingress resource, the check should not pass")
 	}
 
-	review.Request.Resource = v1.GroupVersionResource{Group: extensions.SchemeGroupVersion.Group, Version: extensions.SchemeGroupVersion.Version, Resource: "ingresses"}
+	review.Request.Resource = v1.GroupVersionResource{Group: networking.GroupName, Version: "v1beta1", Resource: "ingresses"}
 	review.Request.Object.Raw = []byte{0xff}
 
-	err = adm.HandleAdmission(review)
+	adm.HandleAdmission(review)
 	if review.Response.Allowed {
-		t.Errorf("when the request object is not decodable, the request should not be allowed")
-	}
-	if err == nil {
-		t.Errorf("when the request object is not decodable, an error should be returned")
+		t.Fatalf("when the request object is not decodable, the request should not be allowed")
 	}
 
-	raw, err := json.Marshal(extensions.Ingress{ObjectMeta: v1.ObjectMeta{Name: testIngressName}})
+	raw, err := json.Marshal(networking.Ingress{ObjectMeta: v1.ObjectMeta{Name: testIngressName}})
 	if err != nil {
-		t.Errorf("failed to prepare test ingress data: %v", err.Error())
+		t.Fatalf("failed to prepare test ingress data: %v", err.Error())
 	}
+
 	review.Request.Object.Raw = raw
 
 	adm.Checker = testChecker{
 		t:   t,
 		err: fmt.Errorf("this is a test error"),
 	}
-	err = adm.HandleAdmission(review)
+
+	adm.HandleAdmission(review)
 	if review.Response.Allowed {
-		t.Errorf("when the checker returns an error, the request should not be allowed")
-	}
-	if err == nil {
-		t.Errorf("when the checker returns an error, an error should be returned")
+		t.Fatalf("when the checker returns an error, the request should not be allowed")
 	}
 
 	adm.Checker = testChecker{
 		t:   t,
 		err: nil,
 	}
-	err = adm.HandleAdmission(review)
+
+	adm.HandleAdmission(review)
 	if !review.Response.Allowed {
-		t.Errorf("when the checker returns no error, the request should be allowed")
-	}
-	if err != nil {
-		t.Errorf("when the checker returns no error, no error should be returned")
+		t.Fatalf("when the checker returns no error, the request should be allowed")
 	}
 }

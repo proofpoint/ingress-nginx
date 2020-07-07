@@ -17,9 +17,13 @@ limitations under the License.
 package rewrite
 
 import (
-	extensions "k8s.io/api/extensions/v1beta1"
+	"net/url"
+
+	networking "k8s.io/api/networking/v1beta1"
+	"k8s.io/klog"
 
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
+	"k8s.io/ingress-nginx/internal/ingress/errors"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
@@ -75,7 +79,7 @@ func NewParser(r resolver.Resolver) parser.IngressAnnotation {
 
 // ParseAnnotations parses the annotations contained in the ingress
 // rule used to rewrite the defined paths
-func (a rewrite) Parse(ing *extensions.Ingress) (interface{}, error) {
+func (a rewrite) Parse(ing *networking.Ingress) (interface{}, error) {
 	var err error
 	config := &Config{}
 
@@ -90,8 +94,29 @@ func (a rewrite) Parse(ing *extensions.Ingress) (interface{}, error) {
 		config.ForceSSLRedirect = a.r.GetDefaultBackend().ForceSSLRedirect
 	}
 
-	config.AppRoot, _ = parser.GetStringAnnotation("app-root", ing)
 	config.UseRegex, _ = parser.GetBoolAnnotation("use-regex", ing)
+
+	config.AppRoot, err = parser.GetStringAnnotation("app-root", ing)
+	if err != nil {
+		if !errors.IsMissingAnnotations(err) && !errors.IsInvalidContent(err) {
+			klog.Warningf("Annotation app-root contains an invalid value: %v", err)
+		}
+
+		return config, nil
+	}
+
+	u, err := url.ParseRequestURI(config.AppRoot)
+	if err != nil {
+		klog.Warningf("Annotation app-root contains an invalid value: %v", err)
+		config.AppRoot = ""
+		return config, nil
+	}
+
+	if u.IsAbs() {
+		klog.Warningf("Annotation app-root only allows absolute paths (%v)", config.AppRoot)
+		config.AppRoot = ""
+		return config, nil
+	}
 
 	return config, nil
 }

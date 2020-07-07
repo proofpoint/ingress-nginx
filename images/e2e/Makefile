@@ -14,20 +14,28 @@
 
 TAG ?=v$(shell date +%m%d%Y)-$(shell git rev-parse --short HEAD)
 REGISTRY ?= quay.io/kubernetes-ingress-controller
-DOCKER ?= docker
 
 IMAGE = $(REGISTRY)/e2e
 
-all: docker-build docker-push
+HOST_ARCH = $(shell which go >/dev/null 2>&1 && go env GOARCH)
+ARCH ?= $(HOST_ARCH)
+ifeq ($(ARCH),)
+    $(error mandatory variable ARCH is empty, either set it when calling the command or make sure 'go env GOARCH' works)
+endif
 
-docker-build:
-	$(DOCKER) build \
-		--pull \
-		--build-arg K8S_RELEASE=v1.14.1 \
-		--build-arg ETCD_VERSION=v3.3.12 \
-		-t $(IMAGE):$(TAG) .
+.PHONY: image
+image:
+	docker build \
+		--build-arg TARGETARCH="$(ARCH)" \
+		--build-arg K8S_RELEASE=v1.15.7 \
+		--build-arg RESTY_CLI_VERSION=0.25rc2 \
+		--build-arg RESTY_CLI_SHA=a38d850441384fa037a5922ca012dcce8708d0e4abe34ad2fe4164a01b28bdfb \
+		--build-arg CHART_TESTING_VERSION=3.0.0-beta.1 \
+		--build-arg YAML_LINT_VERSION=1.13.0 \
+		--build-arg YAMALE_VERSION=1.8.0 \
+		--build-arg HELM_VERSION=v3.2.0 \
+		-t $(IMAGE):$(TAG) rootfs
 
-docker-push:
-	$(DOCKER) push $(IMAGE):$(TAG)
-	$(DOCKER) tag $(IMAGE):$(TAG) $(IMAGE):latest
-	$(DOCKER) push $(IMAGE):latest
+.PHONY: show-image
+show-image:
+	echo -n $(IMAGE):$(TAG)

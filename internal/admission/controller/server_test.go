@@ -24,19 +24,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"k8s.io/api/admission/v1beta1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 type testAdmissionHandler struct{}
 
-func (testAdmissionHandler) HandleAdmission(ar *v1beta1.AdmissionReview) error {
+func (testAdmissionHandler) HandleAdmission(ar *v1beta1.AdmissionReview) {
 	ar.Response = &v1beta1.AdmissionResponse{
-		UID:     types.UID(uuid.New().String()),
 		Allowed: true,
 	}
-	return nil
 }
 
 type errorReader struct{}
